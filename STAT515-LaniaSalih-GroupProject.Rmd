@@ -1,0 +1,206 @@
+---
+title: | 
+  |  \LARGE STAT 515: Group 5 Final Project
+author: "Geethika Pendyala, Lania Salih, Somaja Raavi, and Sudipth Reddy Veerareddy "
+date: "April 2024"
+output: pdf_document
+---
+
+
+# Data
+This dataset spans 1990 to 2022 and contains various global suicide data points, with a focus on crude suicide rates. It includes information on region, country, year, and key suicide metrics such as: Number of Suicides, Cause-Specific Death Percentage, Crude Death Rate per 100,000 Population.
+
+## Why this data set? 
+
+The dataset is really useful because it lets us look at how different aspects of society affect suicide rates over a long time. It includes information from many countries, so we can see how suicide rates vary around the world and how things like money and social status might affect them. It gives us a full picture of suicide rates by considering different factors like age and location, which helps us understand why rates might change in different places and among different age groups.
+
+
+## Data Processing
+
+```{r message=FALSE, warning=FALSE}
+library(ggplot2)
+library(dplyr)
+library(randomForest)
+library(caret)
+library(tidyr)
+library(stats)
+library(cluster)
+```
+
+```{r}
+# read in dataset
+SuicideRates <- read.csv('suicide_rates_1990-2022.csv')
+```
+
+
+```{r}
+# turn sex variable into factor
+SuicideRates$Sex <- factor(SuicideRates$Sex)
+# omit NA
+SuicideRates <- na.omit(SuicideRates)
+suicide_rates_data <- read.csv('suicide_rates_1990-2022.csv')
+```
+
+
+```{r}
+# Impute missing values
+preprocess_params <- preProcess(suicide_rates_data, method='medianImpute')
+suicide_rates_data <- predict(preprocess_params, suicide_rates_data)
+```
+
+## Data Exploration
+
+```{r}
+# getting sum of suicide count by sex
+total_suicide_by_sex <- SuicideRates %>%
+  group_by(Sex) %>%
+  summarize(total_Suicide_Count = sum(SuicideCount))
+```
+
+```{r,fig.width=6, fig.height=2}
+ggplot(total_suicide_by_sex, aes(x = Sex, y = total_Suicide_Count, fill = Sex)) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = "Total Suicide Counts by Gender",
+    x = "Sex",
+    y = "Total Suicide Count"
+  ) +
+  theme_minimal() +
+  theme(text = element_text(size = 8))
+```
+
+In this visual, we can see that when summing the suicide counts per sex, the male
+sex has a greater total suicide count than female. 
+
+```{r}
+# getting average suicide rate by year
+average_suicide_by_year <- SuicideRates %>%
+  group_by(Year) %>%
+  summarize(Average_Suicide_Rate = mean(DeathRatePer100K))
+```
+
+
+```{r, fig.width=6, fig.height=2}
+
+ggplot(suicide_rates_data, aes(x=factor(AgeGroup, levels = unique(AgeGroup)), y=SuicideCount)) +
+  geom_bar(stat="summary", fun="sum", fill="blue") +
+  labs(title="Total Suicides by Age Group", x="Age Group", y="Total Suicides") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+In this visual, we can see that the most suicides happen between 35-54 years of age. 
+
+```{r, fig.width=6, fig.height=2}
+ggplot(suicide_rates_data, aes(x=Year, y=DeathRatePer100K, group=1)) +
+  geom_line(stat="summary", fun="mean") +
+  labs(title="Global Suicide Rates Over the Years", x="Year", y="Average Suicide Rate per 100,000") +
+  theme_minimal()
+```
+
+In the time series plot above, we can see that the average suicide counts had an 
+increase in 1992, with a dip in 1995 and a steady decrease after 1998 and another big increase in 2021.  
+
+
+```{r, warning=FALSE, warning=FALSE}
+# group suicide rate by region/year 
+suppressMessages(average_suicide_by_region_year <- SuicideRates %>%
+  group_by(RegionName,Year) %>%
+  summarize(Average_Suicide_Rate = mean(DeathRatePer100K)))
+```
+
+```{r,fig.width=6, fig.height=2}
+ggplot(average_suicide_by_region_year, aes(x = Year, y = Average_Suicide_Rate)) + 
+  geom_line(aes(color = RegionName, linetype = RegionName)) +
+  labs(title = "Average Suicide Rate (Per 100k) by Region and Year",
+       x = "Year",
+       y = "Average Suicide Rate",
+       color = "Region",
+       linetype = "Region") + theme_minimal() +
+  theme(text = element_text(size = 8))
+```
+From this graph we can see that the average suicide rate per 100k people is overall higher in Europe compared to the other regions. Africa initially started off being very high, but decreases and stays lower over time with occasional spikes, although it increases again right around 2019. North America and the Caribbean and Central and South America stay throughout the 5-10% range over the years. Asia has a steady decrease over time. Finally, Oceania decreases with some peaks until around 2005, and starts to increase again. 
+
+## Descriptive Statistics
+
+```{r}
+# summary stats
+summary(SuicideRates$DeathRatePer100K)
+```
+
+The median and mean are not very close which means that the mean is skewed by 
+the higher values in the dataset. 
+
+## Modeling
+
+### Random Forest
+
+We decide to fit a Random Forest model to predict different categories of suicide rates based on the variables available in the data. We initially fitted the model using all of the variables, but then removed a couple which had minimal feature importance (Year and Inflation Rate) to avoid overfitting. 
+```{r}
+
+# determining quantiles of the data
+quantiles <- quantile(SuicideRates$DeathRatePer100K, probs = c(0.25, 0.5, 0.75))
+# assigning categories of low, medium, or high suicide rates based off of 
+# rate per 100k and quantile values
+SuicideRates$category <- ifelse(SuicideRates$DeathRatePer100K <= quantiles[1], "low",
+                        ifelse(SuicideRates$DeathRatePer100K <= quantiles[2], "medium", "high"))
+
+# converting the suicide category to a factor
+SuicideRates$category <- factor(SuicideRates$category)
+# removing the Death rate per 100k variable since the category column is
+# dependent on it, do not want to overfit. 
+SuicideRates <- subset(SuicideRates, select = -DeathRatePer100K)
+
+# seperating into train and test
+train_index <- createDataPartition(SuicideRates$category, p = 0.7, list = FALSE)
+train_data <- SuicideRates[train_index, ]
+test_data <- SuicideRates[-train_index, ]
+
+# fitting the model and excluding Year and Inflation rate after seeing the minimal 
+# feature importance the first round
+model <- randomForest(category ~ . - Year - InflationRate, data = train_data)
+
+# make predictions on the test data
+predictions <- predict(model, test_data)
+
+# confusion matrix
+confusion_matrix <- table(test_data$category, predictions)
+print(confusion_matrix)
+```
+```{r}
+# show accuracy of random forest model
+sum(diag(confusion_matrix)) / sum(confusion_matrix)
+```
+
+The model has pretty high accuracy, but not as high as when we included the Year and Inflation Rate variables. Overall, according to the confusion matrix the model did pretty well in all three categories, however there were some false negatives for "high" and "medium" predictions.
+
+### K-means Clustering
+
+```{r, fig.width=6, fig.height=4}
+# selecting features
+data <- suicide_rates_data[, c("DeathRatePer100K", "GDPPerCapita")]
+
+# standardizing the data
+scaled_data <- scale(data)
+
+set.seed(1)
+kmeans <- kmeans(scaled_data, centers = 3, nstart = 25)
+
+# putting cluster data into data set
+suicide_rates_data$cluster <- as.factor(kmeans$cluster)
+
+# plotting the clusters
+pairs(data, col = kmeans$cluster)
+```
+
+Cluster 1 (Green): These countries have lower death rates and lower GDP. 
+
+Cluster 2 (Pink): These countries have medium to high GDP and lower death rates.  
+
+Cluster 3 (Black): These countries low to medium GDP and medium to high death rates. 
+
+# Conclusion
+In our analysis, males and individuals aged 35-54 show the highest suicide rates, with a recent decline globally compared to the 1990s. Europe exhibits the highest suicide rates among regions over time. Regarding modeling, Random Forest proves effective in predicting suicide categories (low, medium, high) with a 98% accuracy. Additionally, K-means Clustering, utilizing death rates and GDP per capita, identifies three distinct clusters: low death rates with low GDP, low death rates with high GDP, and medium to high death rates with low to medium GDP.
+
+
+
